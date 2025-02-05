@@ -5,6 +5,7 @@ import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 from lyricsgenius import Genius
 from dotenv import load_dotenv
+from thefuzz import fuzz, process
 
 load_dotenv()
 
@@ -53,9 +54,13 @@ def clean_lyrics(lyrics):
 
   cleaned = re.sub(r'\d+Embed.*$', '', cleaned, flags=re.DOTALL).strip()
 
+  cleaned = re.sub(r'\n+', ' ', cleaned).strip()
+
+  cleaned = re.sub(r'[\u2000-\u200F]', ' ', cleaned).strip()
+
   return cleaned
 
-# for i in range(20, 35):
+# for i in range(20, 30):
 #   song = genius.search_song(tracklist[i]['name'], tracklist[i]['artist'])
 
 #   if song:
@@ -67,15 +72,45 @@ def clean_lyrics(lyrics):
   # print(f"Cleaned lyrics for {tracklist[i]['name']}:")
   # print(tracklist[i]['lyrics'])
 
-for track_dict in tracklist:
+# for track_dict in tracklist:
 
-  song = genius.search_song(track_dict['name'], track_dict['artist'])
+#   song = genius.search_song(track_dict['name'], track_dict['artist'])
 
-  if song:
-    cleaned_lyrics = clean_lyrics(song.lyrics)
-    track_dict['lyrics'] = cleaned_lyrics
-  else:
-    track_dict['lyrics'] = None
+#   if song:
+#     cleaned_lyrics = clean_lyrics(song.lyrics)
+#     track_dict['lyrics'] = cleaned_lyrics
+#   else:
+#     track_dict['lyrics'] = None
 
-with open('playlist-tracks', 'w') as fout:
-  json.dump(tracklist, fout)
+# with open('playlist-tracks', 'w') as fout:
+#   json.dump(tracklist, fout)
+
+
+def load_playlist_tracks(file_path):
+  with open(file_path, 'r') as fin:
+    return json.load(fin)
+
+
+def search_by_lyrics(lyric, file_path='playlist-tracks'):
+
+  tracklist = load_playlist_tracks(file_path)
+
+  lyrics_dict = {track["lyrics"]: (track["name"], track["artist"]) for track in tracklist if track.get("lyrics")}
+
+  matches = process.extract(lyric, lyrics_dict.keys(), limit=3, scorer=fuzz.partial_ratio)
+
+  results = []
+  for match, score in matches:
+    song_name, artist = lyrics_dict[match]
+    results.append({"name": song_name, "artist": artist, "score": score})
+
+  return results
+
+search_query = "I ain't been in my feelings"
+matches = search_by_lyrics(search_query)
+
+for match in matches:
+
+  print(f"{match['name']} by {match['artist']} (score: {match['score']})")
+
+# print(process.extract(lyric), playlist_tracks_file, limit=3, scorer=fuzz.token_sort_ratio)
