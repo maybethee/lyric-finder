@@ -6,6 +6,8 @@ from spotipy.oauth2 import SpotifyClientCredentials
 from lyricsgenius import Genius
 from dotenv import load_dotenv
 from thefuzz import fuzz, process
+import random
+import asyncio
 
 load_dotenv()
 
@@ -72,18 +74,40 @@ def clean_lyrics(lyrics):
   # print(f"Cleaned lyrics for {tracklist[i]['name']}:")
   # print(tracklist[i]['lyrics'])
 
-# for track_dict in tracklist:
+# number of concurrent requests
+SEMAPHORE = asyncio.Semaphore(2)
 
-#   song = genius.search_song(track_dict['name'], track_dict['artist'])
+async def fetch_lyrics(track_dict):
 
-#   if song:
-#     cleaned_lyrics = clean_lyrics(song.lyrics)
-#     track_dict['lyrics'] = cleaned_lyrics
-#   else:
-#     track_dict['lyrics'] = None
+  async with SEMAPHORE:
+    retries = 0
+    while retries < 5:
+      await asyncio.sleep(1 + random.uniform(0, 0.5))
 
-# with open('playlist-tracks', 'w') as fout:
-#   json.dump(tracklist, fout)
+      try:
+        song = await asyncio.to_thread(genius.search_song, track_dict['name'], track_dict['artist'])
+
+        if song:
+          track_dict['lyrics'] = clean_lyrics(song.lyrics)
+          return
+        
+        track_dict['lyrics'] = None
+        return
+
+      except Exception as e:
+        if "429" in str(e):
+          retries += 1
+          wait_time = 2 ** retries
+          print(f"Hit 429 error, retrying in {wait_time} seconds...")
+          await asyncio.sleep(wait_time)
+        else:
+          print(f"Unexpected error: {e}")
+          return
+
+
+async def fetch_all_lyrics(tracklist):
+    tasks = [fetch_lyrics(track) for track in tracklist]
+    await asyncio.gather(*tasks)
 
 
 def load_playlist_tracks(file_path):
@@ -92,7 +116,6 @@ def load_playlist_tracks(file_path):
 
 
 def search_by_lyrics(lyric, file_path='playlist-tracks'):
-
   tracklist = load_playlist_tracks(file_path)
 
   lyrics_dict = {track["lyrics"]: (track["name"], track["artist"]) for track in tracklist if track.get("lyrics")}
@@ -106,11 +129,9 @@ def search_by_lyrics(lyric, file_path='playlist-tracks'):
 
   return results
 
-search_query = "I ain't been in my feelings"
+search_query = "私の名前は"
 matches = search_by_lyrics(search_query)
 
 for match in matches:
 
   print(f"{match['name']} by {match['artist']} (score: {match['score']})")
-
-# print(process.extract(lyric), playlist_tracks_file, limit=3, scorer=fuzz.token_sort_ratio)
