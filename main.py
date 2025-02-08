@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from thefuzz import fuzz, process
 import random
 import asyncio
+import sqlite3
 
 load_dotenv()
 
@@ -47,8 +48,6 @@ def list_tracks(tracks):
 playlist_id = "7ieg8bD3edzzcbwNDu5BEv"
 tracklist = list_tracks(get_playlist_tracks(playlist_id))
 
-
-
 def clean_lyrics(lyrics):
   cleaned = re.sub(r'^.*?Lyrics', '', lyrics, flags=re.DOTALL).strip()
   
@@ -75,12 +74,24 @@ def clean_lyrics(lyrics):
   # print(tracklist[i]['lyrics'])
 
 # number of concurrent requests
-SEMAPHORE = asyncio.Semaphore(2)
+SEMAPHORE = asyncio.Semaphore(3)
 
 async def fetch_lyrics(track_dict):
 
   async with SEMAPHORE:
     retries = 0
+
+    cursor = conn.execute("SELECT lyrics FROM lyrics WHERE name = ? AND artist = ?", (track_dict['name'], track_dict['artist']))
+    row = cursor.fetchone()
+
+    if row: 
+      existing_lyrics = row[0]
+
+      if existing_lyrics:
+        print(f"skipping API call for {track_dict['name']} by {track_dict['artist']} (already in DB)")
+        return
+
+
     while retries < 5:
       await asyncio.sleep(1 + random.uniform(0, 0.5))
 
@@ -88,10 +99,20 @@ async def fetch_lyrics(track_dict):
         song = await asyncio.to_thread(genius.search_song, track_dict['name'], track_dict['artist'])
 
         if song:
-          track_dict['lyrics'] = clean_lyrics(song.lyrics)
-          return
-        
-        track_dict['lyrics'] = None
+          new_lyrics = clean_lyrics(song.lyrics)
+        else:
+          new_lyrics = None
+
+
+        if new_lyrics:
+          conn.execute("""
+                        INSERT INTO lyrics (name, artist, lyrics)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(name, artist) DO UPDATE SET lyrics = excluded.lyrics
+                    """, (track_dict['name'], track_dict['artist'], new_lyrics))
+          print(f"Updated lyrics for {track_dict['name']} by {track_dict['artist']}")
+        else:
+          print(f"No lyrics found for {track_dict['name']} by {track_dict['artist']}")
         return
 
       except Exception as e:
@@ -104,11 +125,14 @@ async def fetch_lyrics(track_dict):
           print(f"Unexpected error: {e}")
           return
 
-
 async def fetch_all_lyrics(tracklist):
     tasks = [fetch_lyrics(track) for track in tracklist]
     await asyncio.gather(*tasks)
+    conn.commit() 
 
+def save_playlist_tracks():
+  with open('playlist-tracks', 'w') as fout:
+    return json.dump(tracklist, fout, indent=4)
 
 def load_playlist_tracks(file_path):
   with open(file_path, 'r') as fin:
@@ -129,9 +153,55 @@ def search_by_lyrics(lyric, file_path='playlist-tracks'):
 
   return results
 
-search_query = "私の名前は"
-matches = search_by_lyrics(search_query)
+def print_lyric_matches(matches):
+  for match in matches:
 
-for match in matches:
+    print(f"{match['name']} by {match['artist']} (score: {match['score']})")
 
-  print(f"{match['name']} by {match['artist']} (score: {match['score']})")
+def create_table():  
+  conn.execute('''CREATE TABLE IF NOT EXISTS lyrics
+              (id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name text NOT NULL,
+              artist text NOT NULL,
+              lyrics text,
+              UNIQUE(name, artist))''')
+
+
+def delete_duplicates():
+  conn.execute("""
+  DELETE FROM lyrics
+  WHERE id NOT IN (
+      SELECT id FROM (
+          SELECT id, name, artist, lyrics,
+                RANK() OVER (
+                    PARTITION BY name, artist 
+                    ORDER BY 
+                        CASE 
+                            WHEN lyrics IS NOT NULL AND lyrics <> '' THEN 1
+                            ELSE 2 
+                        END, id ASC
+                ) AS rnk
+          FROM lyrics
+      ) WHERE rnk = 1
+  );
+  """)
+  conn.commit()
+
+conn = sqlite3.connect('playlist-tracks.db')
+
+create_table()
+
+# asyncio.run(fetch_all_lyrics(tracklist))
+
+# save_playlist_tracks()
+
+cursor = conn.execute("SELECT * from lyrics")
+
+for row in cursor:
+  print(row)
+
+conn.close()
+
+# search_query = "bang bang and it's customary"
+# matches = search_by_lyrics(search_query)
+# print_lyric_matches(matches)
